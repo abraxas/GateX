@@ -2,13 +2,12 @@
 
 ![GateX TUI](README.png)
 
-Late-90s IRC TUI that **re-keys** the Fortinet Hunter 2026 Nuitka password gate.
+TUI that **re-keys** the "Fortinet Hunter 2026" Nuitka password gate.  Part of a capture-the-flag challenge from @YoSoth0)
+Write-up: **[Hunting the Fortinet Hunter 0-day](https://abraxaslabs.tech/research/hunting-the-fortinet-hunter-0-day)**
 
 The ELF never runs on the host. GateX statically unpacks the onefile payload, XOR-unmasks the scrambled Argon2id hash and AES-GCM banner, rewrites those blobs so `FH_PASS=gatex` satisfies both checks, then execs the inner binary inside a locked-down Docker cage.
 
 This does **not** recover the author's original passphrase. Argon2id (`m=65536,t=3,p=4`) is doing its job. The plugins were already compiled into the inner ELF; the password only unwraps a banner.
-
-Write-up: **[Hunting the Fortinet Hunter 0-day](https://abraxaslabs.tech/research/hunting-the-fortinet-hunter-0-day)**
 
 ---
 
@@ -24,7 +23,7 @@ Write-up: **[Hunting the Fortinet Hunter 0-day](https://abraxaslabs.tech/researc
 
 - Python 3.11+
 - Docker Desktop (linux/amd64 — qemu/Rosetta on Apple Silicon)
-- The CTF zip `7350FH.zip` (not shipped; drop it at `files/7350FH.zip`)
+- The CTF zip `7350FH.zip` (not shipped)
 
 The payload is untrusted CTF malware-shaped code. GateX only `exec`s it under:
 
