@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import sys
+import asyncio
 
 from . import __version__
 from .session import last_session_name
@@ -55,8 +55,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _headless(app: GateXApp, *, probe: bool, bypass: str | None) -> int:
-    import asyncio
-
     def log(kind: str, message: str) -> None:
         print(f"{kind:4} {message}")
 

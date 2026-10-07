@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import struct
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Protocol
 
 import zstandard
 
@@ -22,13 +24,17 @@ AAD_MARK = b"cfh-slim-hardened-v2"
 B64_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
 
 
+class _Readable(Protocol):
+    def read(self, n: int) -> bytes: ...
+
+
 def _looks_b64(value: str) -> bool:
     if len(value) < 16 or len(value) > 256:
         return False
     if any(ch not in B64_CHARS for ch in value):
         return False
     body = value.rstrip("=")
-    return bool(body) and all(ch != "=" for ch in body)
+    return bool(body) and "=" not in body
 
 
 def load_outer_elf(path: Path) -> bytes:
@@ -38,7 +44,7 @@ def load_outer_elf(path: Path) -> bytes:
         raise GateError(f"not a file: {path}")
     if zipfile.is_zipfile(path):
         with zipfile.ZipFile(path) as zf:
-            elf_name = None
+            elf_name: str | None = None
             for info in zf.infolist():
                 name = info.filename
                 dest = (Path("/safe") / name).resolve()
@@ -70,7 +76,7 @@ def find_payload(elf: bytes) -> bytes:
     return elf[idx + 3 :]
 
 
-def _read_packed_file(stream) -> tuple[str, int, bytes] | None:
+def _read_packed_file(stream: _Readable) -> tuple[str, int, bytes] | None:
     """One Nuitka packed-file record: name\\0, flags u8, size u64le, data."""
     name_buf = bytearray()
     while True:
@@ -101,7 +107,7 @@ def _read_packed_file(stream) -> tuple[str, int, bytes] | None:
 class _Reader:
     """Minimal read() wrapper so packed-file parsing does not need BufferedReader."""
 
-    def __init__(self, raw) -> None:
+    def __init__(self, raw: _Readable) -> None:
         self._raw = raw
 
     def read(self, n: int) -> bytes:
@@ -126,7 +132,6 @@ def extract_inner_elf(payload_zstd: bytes) -> bytes:
             if data[:4] != b"\x7fELF":
                 raise GateError(f"{name} is not an ELF")
             return data
-        # skip other packed .so files
 
 
 def extract_scramble_blobs(inner: bytes) -> list[str]:
@@ -191,7 +196,7 @@ def extract_gate(path: str | Path) -> GateSecrets:
     return parse_secrets(inner, source=str(path))
 
 
-def iter_packed_files(payload_zstd: bytes):
+def iter_packed_files(payload_zstd: bytes) -> Iterator[tuple[str, int, bytes]]:
     dctx = zstandard.ZstdDecompressor()
     reader = _Reader(dctx.stream_reader(payload_zstd))
     while True:

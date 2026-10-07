@@ -16,10 +16,11 @@ Each live attempt runs inside a long-lived container with:
 
 from __future__ import annotations
 
-import os
+import platform
 import shutil
 import subprocess
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,8 +29,9 @@ DOCKERFILE = Path(__file__).resolve().parent.parent / "sandbox" / "Dockerfile"
 CONTAINER_PREFIX = "gatex-cage"
 INNER_PATH = "/tmp/7350FH"
 PAYLOAD_PATH = "/in/payload"
+PATCHED_BIN = "/opt/fh/7350FH.bin"
 
-HARDENED_RUN = [
+HARDENED_RUN: tuple[str, ...] = (
     "--platform",
     "linux/amd64",
     "--network",
@@ -51,7 +53,9 @@ HARDENED_RUN = [
     "65532:65532",
     "--tmpfs",
     "/tmp:rw,exec,nosuid,nodev,size=1024m",
-]
+)
+
+LogFn = Callable[[str, str], None]
 
 
 @dataclass
@@ -72,7 +76,11 @@ def docker_bin() -> str:
     return shutil.which("docker") or "/usr/local/bin/docker"
 
 
-def docker_cmd(*args: str, timeout: float = 30, check: bool = False) -> subprocess.CompletedProcess:
+def docker_cmd(
+    *args: str,
+    timeout: float = 30,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
     exe = docker_bin()
     if not Path(exe).exists() and shutil.which("docker") is None:
         raise CageError("docker CLI not found")
@@ -104,7 +112,7 @@ def docker_running() -> bool:
 def start_docker_desktop(wait_seconds: float = 90) -> None:
     if docker_running():
         return
-    if os.uname().sysname == "Darwin" and Path("/Applications/Docker.app").exists():
+    if platform.system() == "Darwin" and Path("/Applications/Docker.app").exists():
         subprocess.Popen(
             ["open", "-a", "Docker"],
             stdout=subprocess.DEVNULL,
@@ -207,7 +215,7 @@ def stage_binary(name: str) -> None:
         raise CageError((proc.stderr or proc.stdout or "stage inside cage failed").strip())
 
 
-def ensure_cage(session: str, target: Path, log=None) -> str:
+def ensure_cage(session: str, target: Path, log: LogFn | None = None) -> str:
     name = container_name(session)
     target = target.expanduser().resolve()
     if not target.is_file():
@@ -237,38 +245,39 @@ def ensure_cage(session: str, target: Path, log=None) -> str:
     return name
 
 
-def try_password(
+def _env_args(*pairs: str) -> list[str]:
+    args: list[str] = []
+    for pair in pairs:
+        args.extend(("-e", pair))
+    return args
+
+
+def _captured_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return value
+
+
+def _run_inner(
     name: str,
     password: str,
-    argv: list[str] | None = None,
-    timeout: float = 45.0,
+    binary: str,
+    extra: Sequence[str],
+    timeout: float,
+    extra_env: Sequence[str],
+    host_slack: float,
 ) -> CageResult:
-    extra = list(argv or [])
-    # coreutils timeout: 124 on timeout. KILL after grace.
     cmd = [
         docker_bin(),
         "exec",
-        "-e",
-        f"FH_PASS={password}",
-        "-e",
-        "HOME=/tmp",
-        "-e",
-        "TMPDIR=/tmp",
-        "-e",
-        "TEMP=/tmp",
-        "-e",
-        "NUITKA_ONEFILE_PARENT=",
-        "-e",
-        "PYTHONIOENCODING=utf-8",
-        "-e",
-        "LANG=C.UTF-8",
-        "-e",
-        "LC_ALL=C.UTF-8",
+        *_env_args(f"FH_PASS={password}", *extra_env),
         name,
         "timeout",
         "--signal=KILL",
         f"{max(1, int(timeout))}s",
-        INNER_PATH,
+        binary,
         *extra,
     ]
     t0 = time.perf_counter()
@@ -277,22 +286,21 @@ def try_password(
             cmd,
             capture_output=True,
             text=True,
-            timeout=timeout + 10,
+            timeout=timeout + host_slack,
         )
         duration = time.perf_counter() - t0
-        timed_out = proc.returncode in (124, 137)
         return CageResult(
             returncode=proc.returncode,
             stdout=proc.stdout or "",
             stderr=proc.stderr or "",
             duration=duration,
-            timed_out=timed_out,
+            timed_out=proc.returncode in (124, 137),
         )
     except subprocess.TimeoutExpired as exc:
         return CageResult(
             returncode=137,
-            stdout=(exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or ""),
-            stderr=(exc.stderr or b"").decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or ""),
+            stdout=_captured_text(exc.stdout),
+            stderr=_captured_text(exc.stderr),
             duration=time.perf_counter() - t0,
             timed_out=True,
             error="host-side timeout",
@@ -301,14 +309,43 @@ def try_password(
         raise CageError("docker CLI not found") from exc
 
 
-PATCHED_BIN = "/opt/fh/7350FH.bin"
+def try_password(
+    name: str,
+    password: str,
+    argv: list[str] | None = None,
+    timeout: float = 45.0,
+) -> CageResult:
+    extra = list(argv or [])
+    # coreutils timeout: 124 on timeout. KILL after grace.
+    return _run_inner(
+        name,
+        password,
+        INNER_PATH,
+        extra,
+        timeout,
+        extra_env=(
+            "HOME=/tmp",
+            "TMPDIR=/tmp",
+            "TEMP=/tmp",
+            "NUITKA_ONEFILE_PARENT=",
+            "PYTHONIOENCODING=utf-8",
+            "LANG=C.UTF-8",
+            "LC_ALL=C.UTF-8",
+        ),
+        host_slack=10.0,
+    )
 
 
 def bypass_container_name(session: str) -> str:
     return container_name(session) + "-bp"
 
 
-def ensure_bypass_cage(session: str, target: Path, payload_dir: Path, log=None) -> str:
+def ensure_bypass_cage(
+    session: str,
+    target: Path,
+    payload_dir: Path,
+    log: LogFn | None = None,
+) -> str:
     """Cage with the re-keyed inner tree bind-mounted at /opt/fh (read-only)."""
     name = bypass_container_name(session)
     target = target.expanduser().resolve()
@@ -342,56 +379,20 @@ def try_patched(
     timeout: float = 180.0,
 ) -> CageResult:
     extra = list(argv if argv is not None else ["list"])
-    cmd = [
-        docker_bin(),
-        "exec",
-        "-e",
-        f"FH_PASS={password}",
-        "-e",
-        "HOME=/tmp",
-        "-e",
-        "TMPDIR=/tmp",
-        "-e",
-        "TEMP=/tmp",
-        "-e",
-        "LD_LIBRARY_PATH=/opt/fh",
-        "-e",
-        "PYTHONIOENCODING=utf-8",
-        "-e",
-        "LANG=C.UTF-8",
-        "-e",
-        "LC_ALL=C.UTF-8",
+    return _run_inner(
         name,
-        "timeout",
-        "--signal=KILL",
-        f"{max(1, int(timeout))}s",
+        password,
         PATCHED_BIN,
-        *extra,
-    ]
-    t0 = time.perf_counter()
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout + 15,
-        )
-        duration = time.perf_counter() - t0
-        return CageResult(
-            returncode=proc.returncode,
-            stdout=proc.stdout or "",
-            stderr=proc.stderr or "",
-            duration=duration,
-            timed_out=proc.returncode in (124, 137),
-        )
-    except subprocess.TimeoutExpired as exc:
-        return CageResult(
-            returncode=137,
-            stdout=(exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or ""),
-            stderr=(exc.stderr or b"").decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or ""),
-            duration=time.perf_counter() - t0,
-            timed_out=True,
-            error="host-side timeout",
-        )
-    except FileNotFoundError as exc:
-        raise CageError("docker CLI not found") from exc
+        extra,
+        timeout,
+        extra_env=(
+            "HOME=/tmp",
+            "TMPDIR=/tmp",
+            "TEMP=/tmp",
+            "LD_LIBRARY_PATH=/opt/fh",
+            "PYTHONIOENCODING=utf-8",
+            "LANG=C.UTF-8",
+            "LC_ALL=C.UTF-8",
+        ),
+        host_slack=15.0,
+    )

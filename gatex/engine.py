@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from .gate import classify_output
 from .patch import BYPASS_PASSWORD, cache_dir_for, patch_inner_file
 from .sandbox import (
+    IMAGE,
     CageError,
+    CageResult,
     bypass_container_name,
+    build_image,
+    container_name,
     destroy as cage_destroy,
     ensure_bypass_cage,
+    image_exists,
+    start_docker_desktop,
     try_patched,
 )
 from .session import Session
@@ -29,7 +35,7 @@ class EngineState:
 
 
 class Engine:
-    def __init__(self, session: Session, log: LogFn):
+    def __init__(self, session: Session, log: LogFn) -> None:
         self.session = session
         self.log = log
         self.state = EngineState()
@@ -63,7 +69,8 @@ class Engine:
         self._emit("sys", f"argon2  {secrets.params}  aad={secrets.core_aad}")
         self._emit(
             "sys",
-            "the PHC is a velvet rope. plugins are compiled into the inner ELF. /bypass re-keys the blobs.",
+            "the PHC is a velvet rope. plugins are compiled into the inner ELF. "
+            "/bypass re-keys the blobs.",
         )
         return True
 
@@ -75,7 +82,11 @@ class Engine:
             self._emit("err", f"target missing: {target}")
             return False
         dest = cache_dir_for(target) / "payload"
-        self._emit("sys", f"bypass  static unpack → ~/.gatex/cache/{dest.parent.name}/payload  (no exec)")
+        cache_hint = dest.parent.name
+        self._emit(
+            "sys",
+            f"bypass  static unpack → ~/.gatex/cache/{cache_hint}/payload  (no exec)",
+        )
         try:
             inner = await asyncio.to_thread(extract_payload_tree, target, dest)
         except Exception as exc:
@@ -152,7 +163,7 @@ class Engine:
             return False
         return self._finish_cage_run(cage, password, argv)
 
-    def _finish_cage_run(self, cage, password: str, argv: list[str]) -> bool:
+    def _finish_cage_run(self, cage: CageResult, password: str, argv: list[str]) -> bool:
         kind = classify_output(cage.stdout, cage.stderr, cage.returncode)
         preview = (cage.stdout or cage.stderr or "").strip().replace("\n", " ")
         if len(preview) > 240:
@@ -169,8 +180,10 @@ class Engine:
             self.session.save()
             self._emit(
                 "warn",
-                f"argon2 accepted {password!r} but _decrypt_core failed  ({cage.duration:.1f}s). "
-                f"AAD is the Nuitka bytes value fh-slim-hardened-v2, not the on-disk cfh-… needle.",
+                f"argon2 accepted {password!r} but _decrypt_core failed  "
+                f"({cage.duration:.1f}s). "
+                "AAD is the Nuitka bytes value fh-slim-hardened-v2, "
+                "not the on-disk cfh-… needle.",
             )
             if preview:
                 self._emit("sys", preview)
@@ -186,7 +199,8 @@ class Engine:
         self.state.found = password
         self._emit(
             "ok",
-            f"BYPASS OK  FH_PASS={password!r}  argv={argv}  rc={cage.returncode}  {cage.duration:.1f}s",
+            f"BYPASS OK  FH_PASS={password!r}  argv={argv}  "
+            f"rc={cage.returncode}  {cage.duration:.1f}s",
         )
         if preview:
             self._emit("sys", preview)
@@ -194,8 +208,6 @@ class Engine:
 
     async def ensure_cage(self) -> bool:
         """Build the cage image and confirm Docker is up. Does not exec the ELF."""
-        from .sandbox import IMAGE, build_image, image_exists, start_docker_desktop
-
         try:
             await asyncio.to_thread(start_docker_desktop)
             if not await asyncio.to_thread(image_exists):
@@ -214,8 +226,6 @@ class Engine:
         self.session.save()
 
     async def drop_cage(self) -> None:
-        from .sandbox import container_name
-
         name = container_name(self.session.name)
         await asyncio.to_thread(cage_destroy, name)
         await asyncio.to_thread(cage_destroy, bypass_container_name(self.session.name))

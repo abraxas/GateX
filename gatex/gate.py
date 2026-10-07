@@ -11,7 +11,7 @@ import base64
 import re
 from dataclasses import dataclass
 from itertools import cycle
-from typing import Callable
+from typing import Literal
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHash, VerificationError, VerifyMismatchError
@@ -32,6 +32,8 @@ NO_PASS_MARKERS = ("[!] no passphrase provided",)
 INTEGRITY_MARKERS = ("[!] core integrity check failed",)
 PROMPT_MARKERS = ("Fortinet Hunter passphrase:",)
 
+GateKind = Literal["denied", "nopass", "integrity", "error", "hit", "unknown"]
+
 
 class GateError(Exception):
     pass
@@ -51,7 +53,14 @@ def xunmask(ct: str, key: str) -> str:
     return bytes(a ^ b for a, b in zip(data, cycle(key_bytes))).decode("utf-8")
 
 
-def assemble_hash(a_ct: str, a_key: str, b_ct: str, b_key: str, c_ct: str, c_key: str) -> str:
+def assemble_hash(
+    a_ct: str,
+    a_key: str,
+    b_ct: str,
+    b_key: str,
+    c_ct: str,
+    c_key: str,
+) -> str:
     assembled = xunmask(a_ct, a_key) + xunmask(b_ct, b_key) + xunmask(c_ct, c_key)
     if not PHC_RE.match(assembled):
         raise GateError(f"assembled hash is not a PHC argon2id string: {assembled!r}")
@@ -106,7 +115,7 @@ _LOADER_ERRORS = (
 )
 
 
-def classify_output(stdout: str, stderr: str, returncode: int) -> str:
+def classify_output(stdout: str, stderr: str, returncode: int) -> GateKind:
     """Map cage stdout/stderr to a gate result.
 
     Loader failures must never count as a password hit. The only success
@@ -114,17 +123,14 @@ def classify_output(stdout: str, stderr: str, returncode: int) -> str:
     """
     blob = f"{stdout}\n{stderr}"
     low = blob.lower()
-    if any(m.lower() in low for m in DENIED_MARKERS):
+    if any(marker.lower() in low for marker in DENIED_MARKERS):
         return "denied"
-    if any(m.lower() in low for m in NO_PASS_MARKERS):
+    if any(marker.lower() in low for marker in NO_PASS_MARKERS):
         return "nopass"
-    if any(m.lower() in low for m in INTEGRITY_MARKERS):
+    if any(marker.lower() in low for marker in INTEGRITY_MARKERS):
         return "integrity"
     if any(bit in low for bit in _LOADER_ERRORS):
         return "error"
     if returncode == 0:
         return "hit"
     return "unknown"
-
-
-LogFn = Callable[[str, str], None]

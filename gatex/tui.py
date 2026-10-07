@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -132,6 +133,8 @@ Footer {
     color: #aaaaaa;
 }
 """
+
+CommandFn = Callable[[list[str]], Awaitable[None]]
 
 
 def clock() -> str:
@@ -286,7 +289,10 @@ class GateXApp(App):
         self.query_one("#titlebar", Static).update(title)
 
         if session.bypassed:
-            prog = f" re-keyed  FH_PASS={session.bypass_password!r}  argv={session.cage_argv or ['list']}"
+            prog = (
+                f" re-keyed  FH_PASS={session.bypass_password!r}  "
+                f"argv={session.cage_argv or ['list']}"
+            )
         elif session.hash_phc:
             prog = " hash assembled  — /bypass to re-key the gate"
         else:
@@ -321,7 +327,11 @@ class GateXApp(App):
             f" {escape(GITHUB)}",
         ]
         if s.bypassed:
-            lines += ["", f"[bold green] PASS {escape(s.bypass_password or 'gatex')}[/]", " [bold yellow]re-key[/]"]
+            lines += [
+                "",
+                f"[bold green] PASS {escape(s.bypass_password or 'gatex')}[/]",
+                " [bold yellow]re-key[/]",
+            ]
         return "\n".join(lines)
 
     def action_show_help(self) -> None:
@@ -367,7 +377,14 @@ class GateXApp(App):
             return
         cmd = parts[0].lower().lstrip("/")
         args = parts[1:]
-        handler = {
+        handler = self._commands().get(cmd)
+        if handler is None:
+            self._say("err", f"unknown command /{cmd}  —  /help")
+            return
+        await handler(args)
+
+    def _commands(self) -> dict[str, CommandFn]:
+        return {
             "help": self._cmd_help,
             "?": self._cmd_help,
             "quit": self._cmd_quit,
@@ -385,11 +402,7 @@ class GateXApp(App):
             "cmd": self._cmd_argv,
             "sandbox": self._cmd_sandbox,
             "cage": self._cmd_sandbox,
-        }.get(cmd)
-        if handler is None:
-            self._say("err", f"unknown command /{cmd}  —  /help")
-            return
-        await handler(args)
+        }
 
     async def _cmd_help(self, _args: list[str]) -> None:
         log = self.query_one("#channel", RichLog)

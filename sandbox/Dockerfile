@@ -14,8 +14,8 @@ RUN apt-get update \
 
 USER cage
 WORKDIR /home/cage
-ENV HOME=/tmp
-ENV TMPDIR=/tmp
-ENV TEMP=/tmp
+ENV HOME=/tmp \
+    TMPDIR=/tmp \
+    TEMP=/tmp
 # sleep infinity is supplied at `docker run` so the cage stays up for exec.
 CMD ["sleep", "infinity"]

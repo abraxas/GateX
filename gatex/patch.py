@@ -29,8 +29,7 @@ BYPASS_PASSWORD = "gatex"
 # not the file needle "c"+"fh-slim-hardened-v2".
 GCM_AAD = b"fh-slim-hardened-v2"
 # AES-GCM ciphertext in this build is 95 bytes = 79-byte banner + 16-byte tag.
-BANNER = (b"GATEX BYPASS -- core banner replaced. plugins compiled in.\n") + b" " * 16
-BANNER = BANNER[:79]
+BANNER = (b"GATEX BYPASS -- core banner replaced. plugins compiled in.\n" + b" " * 16)[:79]
 
 
 @dataclass(frozen=True)
@@ -159,5 +158,5 @@ def patch_inner_file(inner_path: Path, password: str = BYPASS_PASSWORD) -> Patch
 
 
 def cache_dir_for(target: Path) -> Path:
-    digest = hashlib.sha256(str(target.resolve()).encode()).hexdigest()[:16]
+    digest = hashlib.sha256(str(target.resolve()).encode("utf-8")).hexdigest()[:16]
     return Path.home() / ".gatex" / "cache" / digest

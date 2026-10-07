@@ -6,8 +6,9 @@ import json
 import os
 import tempfile
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 
 GATEX_HOME = Path.home() / ".gatex"
@@ -19,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def remember_last_session(name: str) -> None:
@@ -27,9 +28,9 @@ def remember_last_session(name: str) -> None:
     payload = json.dumps({"session": name, "updated_at": now_iso()})
     tmp = ACTIVE_PATH.with_suffix(".tmp")
     tmp.write_text(payload + "\n", encoding="utf-8")
-    os.replace(tmp, ACTIVE_PATH)
+    tmp.replace(ACTIVE_PATH)
     try:
-        os.chmod(ACTIVE_PATH, 0o600)
+        ACTIVE_PATH.chmod(0o600)
     except OSError:
         pass
 
@@ -70,7 +71,7 @@ class TargetRecord:
     notes: list[str] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "TargetRecord":
+    def from_dict(cls, data: dict[str, Any]) -> TargetRecord:
         fields = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
         return cls(**fields)
 
@@ -148,12 +149,12 @@ class Session:
         job.bypassed = self.bypassed
         job.bypass_password = self.bypass_password
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         self._push_active()
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Session":
+    def from_dict(cls, data: dict[str, Any]) -> Session:
         raw_targets = data.get("targets") or {}
         targets: dict[str, TargetRecord] = {}
         if isinstance(raw_targets, dict):
@@ -184,26 +185,27 @@ class Session:
         self.updated_at = now_iso()
         payload = json.dumps(self.to_dict(), indent=2, sort_keys=False)
         fd, tmp = tempfile.mkstemp(prefix=f".{self.name}.", suffix=".json", dir=SESSION_DIR)
+        tmp_path = Path(tmp)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(payload)
                 handle.write("\n")
-            os.replace(tmp, self.path)
+            tmp_path.replace(self.path)
         except Exception:
             try:
-                os.unlink(tmp)
+                tmp_path.unlink()
             except OSError:
                 pass
             raise
         try:
-            os.chmod(self.path, 0o600)
+            self.path.chmod(0o600)
         except OSError:
             pass
         remember_last_session(self.name)
         return self.path
 
     @classmethod
-    def load(cls, name: str) -> "Session":
+    def load(cls, name: str) -> Session:
         path = SESSION_DIR / f"{name}.json"
         with path.open(encoding="utf-8") as handle:
             data = json.load(handle)
@@ -213,7 +215,7 @@ class Session:
         return session
 
     @classmethod
-    def load_or_create(cls, name: str) -> "Session":
+    def load_or_create(cls, name: str) -> Session:
         path = SESSION_DIR / f"{name}.json"
         if path.exists():
             return cls.load(name)
